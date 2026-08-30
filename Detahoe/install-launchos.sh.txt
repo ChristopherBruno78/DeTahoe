@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+#
+# install-launchos.sh — Install LaunchOS (a Launchpad replacement for macOS
+# Tahoe), pin it to the Dock in place of Tahoe's "Apps" button, and give it the
+# classic Sequoia Launchpad icon so it looks like the old Launchpad.
+#
+# LaunchOS: https://launchosapp.com  /  https://github.com/Remix-Design/LaunchOS
+#
+# The classic Sequoia Launchpad icon ships inside the app bundle as
+# Contents/Resources/AppIcon.icns. LaunchOS's live icon comes from its Liquid
+# Glass Assets.car, so we set that legacy .icns as a custom Finder icon to force
+# the old look. Pass a different icon as the first argument to override.
+#
+# Usage:
+#   ./install-launchos.sh [icon.icns|icon.png]
+#
+# No SIP changes, no protected-file edits — LaunchOS installs like any app.
+
+set -euo pipefail
+
+# --- config -----------------------------------------------------------------
+DMG_URL="https://static.remixdesign.app/launchos/LaunchOS-2.3.0-443.dmg"
+# Install as "LaunchPad.app" so the Dock label reads "LaunchPad", matching the
+# classic look. Set to "LaunchOS.app" if you'd rather keep the real name.
+APP_NAME="LaunchPad.app"
+APP_PATH="/Applications/$APP_NAME"
+BUNDLE_ID="app.remixdesign.LaunchOS"
+
+ICON="${1:-}"
+
+# --- 1. download & install --------------------------------------------------
+tmpdir="$(mktemp -d)"
+mount_point=""
+cleanup() {
+    [[ -n "$mount_point" ]] && hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+    rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+echo "Downloading LaunchOS..."
+curl -fL# "$DMG_URL" -o "$tmpdir/LaunchOS.dmg"
+
+echo "Mounting disk image..."
+# Parse the plist output — the human-readable table is empty under -quiet and a
+# volume name with spaces breaks naive grepping.
+mount_point="$(hdiutil attach "$tmpdir/LaunchOS.dmg" -nobrowse -noverify -plist |
+    plutil -extract 'system-entities' xml1 -o - - |
+    grep -A1 'mount-point' | grep -Eo '/Volumes/[^<]+' | head -1)"
+[[ -n "$mount_point" ]] || { echo "error: could not mount DMG" >&2; exit 1; }
+
+src_app="$(find "$mount_point" -maxdepth 1 -name '*.app' -print -quit)"
+[[ -n "$src_app" ]] || { echo "error: no .app found in DMG" >&2; exit 1; }
+
+echo "Installing to $APP_PATH..."
+rm -rf "$APP_PATH"
+ditto "$src_app" "$APP_PATH"
+xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+
+# --- 2. apply the classic Sequoia icon --------------------------------------
+# Default to the legacy .icns bundled inside the app itself.
+ICON="${ICON:-$APP_PATH/Contents/Resources/AppIcon.icns}"
+
+if [[ ! -f "$ICON" ]]; then
+    echo "warning: icon not found ($ICON) — LaunchOS keeps its live icon."
+else
+    echo "Applying Sequoia Launchpad icon..."
+    # NSWorkspace.setIcon writes the icon as a custom Finder icon on the bundle.
+    /usr/bin/swift - "$ICON" "$APP_PATH" <<'SWIFT'
+import Cocoa
+let img = NSImage(contentsOfFile: CommandLine.arguments[1])!
+let ok = NSWorkspace.shared.setIcon(img, forFile: CommandLine.arguments[2], options: [])
+exit(ok ? 0 : 1)
+SWIFT
+fi
+
+# --- 3. put it in the Dock, replacing the "Apps" button ---------------------
+echo "Updating the Dock..."
+
+# Remove Tahoe's built-in "Apps"/Launchpad tile and any prior LaunchOS/LaunchPad
+# entries so we don't end up with duplicates.
+plist="$HOME/Library/Preferences/com.apple.dock.plist"
+pb() { /usr/libexec/PlistBuddy "$@" "$plist"; }
+
+remove_matching() {
+    # $1 = domain array (persistent-apps); delete entries whose label or url matches
+    local arr="$1" i count
+    count="$(pb -c "Print :$arr" 2>/dev/null | grep -c 'Dict {' || true)"
+    for ((i = count - 1; i >= 0; i--)); do
+        local label url tile
+        label="$(pb -c "Print :$arr:$i:tile-data:file-label" 2>/dev/null || true)"
+        url="$(pb -c "Print :$arr:$i:tile-data:file-data:_CFURLString" 2>/dev/null || true)"
+        tile="$(pb -c "Print :$arr:$i:tile-type" 2>/dev/null || true)"
+        if [[ "$label" == "LaunchPad" || "$label" == "LaunchOS" || "$label" == "Apps" ||
+              "$url" == *"/LaunchPad.app"* || "$url" == *"/LaunchOS.app"* ||
+              "$tile" == "launchpad-tile" || "$tile" == "apps-tile" ]]; then
+            pb -c "Delete :$arr:$i" 2>/dev/null || true
+        fi
+    done
+}
+remove_matching persistent-apps
+
+# Insert LaunchOS as the first persistent-app (index 0). Finder is a permanent
+# Dock fixture that lives outside persistent-apps, so index 0 renders right next
+# to the Finder icon — exactly where Tahoe's "Apps" button used to sit. Built
+# key-by-key so the ordering is deterministic.
+n="tile-data"
+pb -c "Add :persistent-apps:0 dict"
+pb -c "Add :persistent-apps:0:tile-type string file-tile"
+pb -c "Add :persistent-apps:0:$n dict"
+pb -c "Add :persistent-apps:0:$n:file-label string ${APP_NAME%.app}"
+pb -c "Add :persistent-apps:0:$n:file-data dict"
+pb -c "Add :persistent-apps:0:$n:file-data:_CFURLStringType integer 15"
+pb -c "Add :persistent-apps:0:$n:file-data:_CFURLString string file://$APP_PATH/"
+
+killall Dock 2>/dev/null || true
+
+echo
+echo "Done. LaunchOS is installed at $APP_PATH and pinned to the Dock,"
+echo "right next to the Finder icon."
+echo "If Tahoe's native 'Apps' button is still showing, drag it out of the Dock once."

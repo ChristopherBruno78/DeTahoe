@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		A04263383044472C0043A219 /* Detahoe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Detahoe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A04263383044472C0043A219 /* DeTahoe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeTahoe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -40,7 +40,7 @@
 		A04263393044472C0043A219 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A04263383044472C0043A219 /* Detahoe.app */,
+				A04263383044472C0043A219 /* DeTahoe.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A04263373044472C0043A219 /* Detahoe */ = {
+		A04263373044472C0043A219 /* DeTahoe */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A04263473044472D0043A219 /* Build configuration list for PBXNativeTarget "Detahoe" */;
+			buildConfigurationList = A04263473044472D0043A219 /* Build configuration list for PBXNativeTarget "DeTahoe" */;
 			buildPhases = (
 				A04263343044472C0043A219 /* Sources */,
 				A04263353044472C0043A219 /* Frameworks */,
@@ -63,11 +63,11 @@
 			fileSystemSynchronizedGroups = (
 				A042633A3044472C0043A219 /* Detahoe */,
 			);
-			name = Detahoe;
+			name = DeTahoe;
 			packageProductDependencies = (
 			);
 			productName = Detahoe;
-			productReference = A04263383044472C0043A219 /* Detahoe.app */;
+			productReference = A04263383044472C0043A219 /* DeTahoe.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -98,7 +98,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A04263373044472C0043A219 /* Detahoe */,
+				A04263373044472C0043A219 /* DeTahoe */,
 			);
 		};
 /* End PBXProject section */
@@ -250,7 +250,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = UYKW2DQFM2;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -261,12 +261,14 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cocoawerks.Detahoe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -279,7 +281,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = UYKW2DQFM2;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -290,12 +292,14 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cocoawerks.Detahoe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -311,7 +315,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A04263473044472D0043A219 /* Build configuration list for PBXNativeTarget "Detahoe" */ = {
+		A04263473044472D0043A219 /* Build configuration list for PBXNativeTarget "DeTahoe" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A04263483044472D0043A219 /* Debug */,
