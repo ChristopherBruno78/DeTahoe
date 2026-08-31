@@ -9,7 +9,7 @@
  
 **Bring back the Sequoia look on macOS Tahoe.** DeTahoe is a small native macOS
 app that reverses the most divisive visual changes Tahoe introduced, restoring
-the feel of macOS Sequoia.
+the feel of macOS Sequoia as much as possible.
 <br/>
 <br/> 
 ## What it does
