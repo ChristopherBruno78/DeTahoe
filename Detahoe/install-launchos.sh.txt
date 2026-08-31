@@ -20,9 +20,9 @@ set -euo pipefail
 
 # --- config -----------------------------------------------------------------
 DMG_URL="https://static.remixdesign.app/launchos/LaunchOS-2.3.0-443.dmg"
-# Install as "LaunchPad.app" so the Dock label reads "LaunchPad", matching the
+# Install as "Launchpad.app" so the Dock label reads "Launchpad", matching the
 # classic look. Set to "LaunchOS.app" if you'd rather keep the real name.
-APP_NAME="LaunchPad.app"
+APP_NAME="Launchpad.app"
 APP_PATH="/Applications/$APP_NAME"
 BUNDLE_ID="app.remixdesign.LaunchOS"
 
