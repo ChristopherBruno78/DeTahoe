@@ -250,15 +250,15 @@ didCompleteWithError:(NSError *)error {
 // Finder icon — exactly where Tahoe's "Apps" button used to be. Edits the Dock
 // plist directly (as the script did) and relaunches the Dock to pick it up.
 - (void)pinToDock {
-    NSString *plistPath = [NSHomeDirectory()
-        stringByAppendingPathComponent:@"Library/Preferences/com.apple.dock.plist"];
-    NSMutableDictionary *dock =
-        [[NSDictionary dictionaryWithContentsOfFile:plistPath] mutableCopy];
+    // Read/write through cfprefsd (the preferences API), not the plist file
+    // directly — a direct file write is clobbered by cfprefsd's cache, so the
+    // relaunched Dock would never see it.
+    NSUserDefaults *dock = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.dock"];
     if (!dock) {
         return;
     }
 
-    NSMutableArray *apps = [dock[@"persistent-apps"] mutableCopy] ?: [NSMutableArray array];
+    NSMutableArray *apps = [[dock arrayForKey:@"persistent-apps"] mutableCopy] ?: [NSMutableArray array];
 
     // Drop the native Apps tile and any duplicate LaunchOS/Launchpad entries.
     NSMutableIndexSet *doomed = [NSMutableIndexSet indexSet];
@@ -290,8 +290,8 @@ didCompleteWithError:(NSError *)error {
     };
     [apps insertObject:tile atIndex:0];
 
-    dock[@"persistent-apps"] = apps;
-    [dock writeToFile:plistPath atomically:YES];
+    [dock setObject:apps forKey:@"persistent-apps"];
+    [dock synchronize];
 
     [self runTool:@"/usr/bin/killall" arguments:@[ @"Dock" ]];
 }
