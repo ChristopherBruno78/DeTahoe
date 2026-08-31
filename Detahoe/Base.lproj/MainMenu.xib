@@ -140,7 +140,7 @@
                             <action selector="showHelp:" target="dws-uz-YmS" id="1O8-vk-4qb"/>
                         </connections>
                     </button>
-                    <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="svu-Xc-nE4">
+                    <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="svu-Xc-nE4" customClass="LinkTextField">
                         <rect key="frame" x="18" y="93" width="190" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                         <textFieldCell key="cell" title="Install LaunchOS" id="er0-45-xrH">

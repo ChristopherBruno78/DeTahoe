@@ -6,6 +6,8 @@
 
 #import "AppDelegate.h"
 #import "IconUnboxer.h"
+#import "LaunchOSInstaller.h"
+#import "LinkTextField.h"
 
 
 
@@ -39,6 +41,12 @@ static NSString * const kStyleTahoe   = @"tahoe";
 @property (weak) IBOutlet NSButton *installLaunchOSHelpButton;
 @property (weak) IBOutlet NSButton *installLaunchOSRunButton;
 
+// Retained for the duration of an install so we can drive the progress alert.
+@property (strong) LaunchOSInstaller *launchOSInstaller;
+@property (strong) NSAlert *installProgressAlert;
+@property (strong) NSProgressIndicator *installProgressBar;
+@property (strong) NSTextField *installProgressStatus;
+
 @end
 
 @implementation AppDelegate
@@ -62,9 +70,43 @@ static NSString * const kStyleTahoe   = @"tahoe";
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     [self loadPreferencesIntoControls];
 
+    // Turn "LaunchOS" in the row label into a link to the LaunchOS website.
+    [self linkifyLaunchOSLabel];
+
     // Hide the Install LaunchOS row if it's already installed. Unbox and install
     // run only on Apply, never at launch.
     [self updateLaunchOSRowVisibility];
+}
+
+// Renders the "Install LaunchOS" label with "LaunchOS" as a clickable link to
+// the LaunchOS website. LinkTextField handles the click and cursor itself, so
+// the label stays non-selectable (no text-editing I-beam).
+- (void)linkifyLaunchOSLabel {
+    LinkTextField *label = (LinkTextField *)self.installLaunchOSLabel;
+    if (![label isKindOfClass:[LinkTextField class]]) {
+        return;
+    }
+    NSString *text = label.stringValue;
+    NSRange linkRange = [text rangeOfString:@"LaunchOS"];
+    if (linkRange.location == NSNotFound) {
+        return;
+    }
+
+    NSURL *url = [NSURL URLWithString:@"https://launchosapp.com"];
+    NSMutableAttributedString *attributed =
+        [[NSMutableAttributedString alloc] initWithString:text attributes:@{
+            NSFontAttributeName: label.font ?: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: [NSColor labelColor],
+        }];
+    // Style the link like a link: accent color + underline.
+    [attributed addAttributes:@{
+        NSForegroundColorAttributeName: [NSColor linkColor],
+        NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+    } range:linkRange];
+    label.attributedStringValue = attributed;
+
+    label.linkURL = url;
+    label.linkRange = linkRange;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -340,15 +382,10 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
 #pragma mark - Install LaunchOS
 
-// LaunchOS installs as /Applications/LaunchPad.app (bundle id below). We can't
-// uninstall it, so once it's present the option is hidden entirely.
+// LaunchOS installs as /Applications/Launchpad.app. We can't uninstall it, so
+// once it's present the option is hidden entirely.
 - (BOOL)isLaunchOSInstalled {
-    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/Applications/LaunchPad.app"]) {
-        return YES;
-    }
-    NSURL *found = [[NSWorkspace sharedWorkspace]
-        URLForApplicationWithBundleIdentifier:@"app.remixdesign.LaunchOS"];
-    return found != nil;
+    return [LaunchOSInstaller isInstalled];
 }
 
 // Shows the Install LaunchOS row (label, help button, Run button) only when
@@ -360,48 +397,88 @@ static NSString * const kStyleTahoe   = @"tahoe";
     self.installLaunchOSRunButton.hidden  = installed;
 }
 
-// Run button: runs install-launchos.sh, which downloads LaunchOS, installs it to
-// /Applications, applies the classic Launchpad icon, and pins it to the Dock.
-// The script edits the *user's* Dock preferences, so it must run as the user
-// (not via admin escalation). Runs off the main thread since it downloads a DMG.
+// Run button: downloads LaunchOS, installs it to /Applications, applies the
+// classic Launchpad icon, and pins it to the Dock via LaunchOSInstaller. A
+// progress sheet with a progress bar tracks the download and install; the whole
+// operation runs as the user (it edits the user's Dock preferences).
 - (IBAction)runInstallLaunchOS:(id)sender {
     if ([self isLaunchOSInstalled]) {
         return;  // Install only; never uninstall.
     }
 
-    NSURL *resource = [[NSBundle mainBundle] URLForResource:@"install-launchos.sh"
-                                              withExtension:@"txt"];
-    if (!resource) {
-        NSLog(@"Detahoe: install-launchos script resource missing from bundle.");
-        return;
-    }
-    NSURL *scriptURL = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
-                        URLByAppendingPathComponent:@"detahoe-install-launchos.sh"];
-    NSError *error = nil;
-    [[NSFileManager defaultManager] removeItemAtURL:scriptURL error:NULL];
-    if (![[NSFileManager defaultManager] copyItemAtURL:resource toURL:scriptURL error:&error]) {
-        NSLog(@"Detahoe: failed to stage install-launchos script: %@", error);
-        return;
-    }
-
-    NSTask *task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
-    task.arguments = @[ scriptURL.path ];
+    [self presentInstallProgressAlert];
 
     __weak typeof(self) weakSelf = self;
-    task.terminationHandler = ^(NSTask *finishedTask) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (finishedTask.terminationStatus != 0) {
-                NSLog(@"Detahoe: install-launchos exited with status %d",
-                      finishedTask.terminationStatus);
-            }
-            [weakSelf updateLaunchOSRowVisibility];
-        });
-    };
+    self.launchOSInstaller = [[LaunchOSInstaller alloc] init];
+    [self.launchOSInstaller installWithProgress:^(double fraction, NSString *status) {
+        weakSelf.installProgressBar.doubleValue = fraction;
+        weakSelf.installProgressStatus.stringValue = status;
+    } completion:^(BOOL success, NSError *error) {
+        [weakSelf dismissInstallProgressAlertWithSuccess:success error:error];
+    }];
+}
 
-    if (![task launchAndReturnError:&error]) {
-        NSLog(@"Detahoe: failed to run install-launchos: %@", error);
+// Builds and shows the progress sheet: a determinate progress bar plus a status
+// line in the alert's accessory view. Only "Cancel"/"OK" buttons are omitted so
+// the sheet stays modal while work is underway.
+- (void)presentInstallProgressAlert {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Installing LaunchOS";
+    alert.informativeText = @"Downloading and installing LaunchOS. This may take a moment.";
+
+    const CGFloat width = 320.0;
+
+    NSProgressIndicator *bar =
+        [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 22, width, 20)];
+    bar.style = NSProgressIndicatorStyleBar;
+    bar.indeterminate = NO;
+    bar.minValue = 0.0;
+    bar.maxValue = 1.0;
+    bar.doubleValue = 0.0;
+
+    NSTextField *status = [NSTextField labelWithString:@"Preparing…"];
+    status.frame = NSMakeRect(0, 0, width, 16);
+    status.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    status.textColor = [NSColor secondaryLabelColor];
+
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, 42)];
+    [accessory addSubview:bar];
+    [accessory addSubview:status];
+    alert.accessoryView = accessory;
+
+    self.installProgressAlert  = alert;
+    self.installProgressBar    = bar;
+    self.installProgressStatus = status;
+
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+
+// Tears down the progress sheet and reports the result with a follow-up alert.
+- (void)dismissInstallProgressAlertWithSuccess:(BOOL)success error:(NSError *)error {
+    if (self.installProgressAlert) {
+        [self.window endSheet:self.installProgressAlert.window];
     }
+    self.installProgressAlert  = nil;
+    self.installProgressBar    = nil;
+    self.installProgressStatus = nil;
+    self.launchOSInstaller     = nil;
+
+    [self updateLaunchOSRowVisibility];
+
+    NSAlert *result = [[NSAlert alloc] init];
+    if (success) {
+        result.messageText = @"LaunchOS Installed";
+        result.informativeText =
+            @"LaunchOS is installed and pinned to the Dock, right next to Finder. "
+             "If Tahoe's native “Apps” button is still showing, you can drag it out of the Dock.";
+    } else {
+        result.alertStyle = NSAlertStyleWarning;
+        result.messageText = @"Installation Failed";
+        result.informativeText = error.localizedDescription
+            ?: @"LaunchOS could not be installed.";
+    }
+    [result addButtonWithTitle:@"OK"];
+    [result beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
 - (void)reportChanges:(NSArray<NSString *> *)changes {
