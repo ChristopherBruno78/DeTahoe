@@ -16,7 +16,7 @@ the feel of macOS Sequoia as much as possible.
 
 DeTahoe is a single settings window. Tweak the change you want and click **Apply**. 
 
-<img src="Screenshot.png" alt="Main Screenshot" width="600"  >
+<img src="Screenshot2.png" alt="Main Screenshot" width="600"  >
 
 | Setting | What it changes |
 | --- | --- |
