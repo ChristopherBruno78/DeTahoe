@@ -7,7 +7,7 @@
 
 
  
-**Bring back the Sequoia look on macOS Tahoe.** DeTahoe is a small native macOS
+**Bring back the Sequoia feel on macOS Tahoe.** DeTahoe is a small macOS
 app that reverses the most divisive visual changes Tahoe introduced, restoring
 the feel of macOS Sequoia as much as possible.
 <br/>
@@ -33,11 +33,13 @@ The following features modify other applications, which requires macOS's **App M
 
 ### Unbox Application Icons
 
-Tahoe masks every app icon to the system squircle, dropping free-form and legacy icons onto a gray rounded "box." **Unbox** installs each app's own icon as a custom Finder icon so it renders edge-to-edge again — the programmatic equivalent of dragging an icon into Get Info. **Revert** restores the defaults. Apps installed via the Mac App Store are unsupported and skipped.
+Tahoe masks every nonstandard shaped app icon to the system squircle: free-form and legacy icons are placed inside a gray rounded "box." **Unbox** installs each app's own icon as a custom Finder icon so it renders edge-to-edge again — the programmatic equivalent of dragging an icon into Get Info. **Revert** restores the defaults. You can run Unbox anytime you add new Apps to the Application folder that need their free-form icon restored.
+
+Apps installed via the Mac App Store are unsupported and skipped.
 
 ### Install LaunchOS
 
-Tahoe replaces Launchpad with an "Apps" button. DeTahoe can download and install [LaunchOS](https://launchosapp.com) — a Launchpad replacement — give it the classic Sequoia Launchpad icon, and pin it to the Dock right where the old Launchpad was placed. 
+Tahoe replaces Launchpad with an "Apps" grid. DeTahoe can download and install [LaunchOS](https://launchosapp.com) — a Launchpad replacement and pin it to the Dock right where the old Launchpad was placed. 
  
 
 ## License 

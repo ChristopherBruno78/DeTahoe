@@ -553,7 +553,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
     // Finder refreshes now; a running app's own Dock icon updates on relaunch.
     if (summary.unboxed.count > 0) {
-        [sections addObject:@"Any app that's currently running updates its icon when you relaunch it."];
+        [sections addObject:@"Any app that's currently running will update is icon on next launch."];
     }
 
     NSString *details = sections.count > 0
