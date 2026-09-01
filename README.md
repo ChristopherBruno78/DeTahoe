@@ -26,7 +26,7 @@ DeTahoe is a single settings window. Tweak the change you want and click **Apply
 
 <img src="img/AppManagement.png" alt="App Management Permission" width="600"  >
 
-The following feature modifies other applications, which requires macOS's **App Management** permission. Open **System Settings → Privacy & Security → App Management**, then enable DeTahoe in the list. If DeTahoe is already listed but the change doesn't take effect, toggle it off and back on. You may be prompted to quit and reopen the app after granting access. DeTahoe is using the permission to unbox non-standard app icons.
+The following feature modifies other applications, which requires macOS's **App Management** permission. Open **System Settings → Privacy & Security → App Management**, then enable DeTahoe in the list. If DeTahoe is already listed but the change doesn't take effect, toggle it off and back on. You may be prompted to quit and reopen the app after granting access. DeTahoe is using the permission to unbox non-standard app icons and install LaunchOS.
 
 
 
