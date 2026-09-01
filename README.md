@@ -1,15 +1,15 @@
 
 
 
-<img src="img/Hero.png" alt="DeTahoe" align="right" width="380">
-
 # DeTahoe
+
+<img src="img/Hero.png" alt="DeTahoe" align="right" width="380">
 
 **Bring back the Sequoia feel on macOS Tahoe.** DeTahoe is a small macOS
 app that reverses the most divisive visual changes Tahoe introduced, restoring
 the feel of macOS Sequoia as much as possible.
 
-## What it does
+### What it does
 
 DeTahoe is a single settings window. Tweak the change you want and click **Apply**.
 
