@@ -8,16 +8,15 @@
 
 // --- config -----------------------------------------------------------------
 static NSString * const kDMGURL   = @"https://static.remixdesign.app/launchos/LaunchOS-2.3.0-443.dmg";
-// Install as "Launchpad.app" so the Dock label reads "Launchpad", matching the
-// classic look.
+// Install as "Launchpad.app" so the Dock label reads "Launchpad".
 static NSString * const kAppName  = @"Launchpad.app";
 static NSString * const kAppPath  = @"/Applications/Launchpad.app";
 static NSString * const kBundleID = @"app.remixdesign.LaunchOS";
+static const NSInteger kLaunchOSGridIcon = 2;  // AppIcon pref = classic grid
 
 static NSString * const kErrorDomain = @"DetahoeLaunchOSInstaller";
 
-// The download is the long part, so it owns most of the progress bar; the local
-// install steps share the remainder.
+// Download owns most of the bar; the local steps share the rest.
 static const double kDownloadShare = 0.80;
 
 @interface LaunchOSInstaller () <NSURLSessionDownloadDelegate>
@@ -26,9 +25,7 @@ static const double kDownloadShare = 0.80;
 @property (copy)   LaunchOSInstallCompletion completionBlock;
 @property (strong) NSURLSession *session;
 @property (strong) NSString *mountPoint;   // set once the DMG is mounted
-// Retains the installer for the duration of the async install so the caller
-// doesn't have to.
-@property (strong) LaunchOSInstaller *selfRef;
+@property (strong) LaunchOSInstaller *selfRef;  // self-retain during async install
 
 @end
 
@@ -79,8 +76,7 @@ static const double kDownloadShare = 0.80;
         if (block) {
             block(error == nil, error);
         }
-        // Release the self-retain after the callback has run.
-        self.selfRef = nil;
+        self.selfRef = nil;  // release self-retain
     });
 }
 
@@ -109,8 +105,7 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
 didFinishDownloadingToURL:(NSURL *)location {
-    // The temp file at `location` is deleted when this method returns, so move it
-    // somewhere stable first.
+    // `location` is deleted on return — move it somewhere stable first.
     NSString *dmgPath = [NSTemporaryDirectory()
         stringByAppendingPathComponent:@"detahoe-launchos.dmg"];
     NSError *error = nil;
@@ -121,7 +116,6 @@ didFinishDownloadingToURL:(NSURL *)location {
         [self finishWithError:error];
         return;
     }
-    // Run the local install steps off the delegate queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         [self runInstallStepsWithDMGPath:dmgPath];
     });
@@ -130,8 +124,7 @@ didFinishDownloadingToURL:(NSURL *)location {
 - (void)URLSession:(NSURLSession *)session
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error {
-    // Only surface transport errors here; success flows through the download
-    // delegate above.
+    // Only transport errors here; success flows through the download delegate.
     if (error) {
         [self finishWithError:error];
     }
@@ -139,8 +132,7 @@ didCompleteWithError:(NSError *)error {
 
 #pragma mark - Local install steps
 
-// Mirrors install-launchos.sh: mount, copy into /Applications, apply the classic
-// icon, and pin to the Dock. Runs on a background queue.
+// Mount, copy into /Applications, select the icon, pin to the Dock. Background.
 - (void)runInstallStepsWithDMGPath:(NSString *)dmgPath {
     NSError *error = nil;
 
@@ -171,27 +163,21 @@ didCompleteWithError:(NSError *)error {
         [self finishWithError:[self errorWithMessage:@"Failed to copy LaunchOS into /Applications."]];
         return;
     }
-    // Clear quarantine so the app opens without a Gatekeeper prompt.
+    // Clear quarantine → no Gatekeeper prompt.
     [self runTool:@"/usr/bin/xattr" arguments:@[ @"-dr", @"com.apple.quarantine", kAppPath ]];
 
     [self detachMountPoint:mountPoint];
     self.mountPoint = nil;
     [self cleanupDMGAtPath:dmgPath];
 
-    // --- 3. apply the classic Sequoia icon ---------------------------------
-    // The legacy .icns bundled inside the app itself. NSWorkspace.setIcon runs
-    // in-process here (no swift subprocess needed), writing it as a custom Finder
-    // icon so the old Launchpad look wins over the live Liquid Glass icon.
-    [self reportProgress:0.94 status:@"Applying Launchpad icon…"];
-    NSString *iconPath = [kAppPath stringByAppendingPathComponent:@"Contents/Resources/AppIcon.icns"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:iconPath]) {
-        NSImage *icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
-        if (icon) {
-            [[NSWorkspace sharedWorkspace] setIcon:icon forFile:kAppPath options:0];
-        }
-    }
+    // --- 3. select the classic Launchpad grid icon -------------------------
+    // LaunchOS reads its icon from its own "AppIcon" pref; set it before first launch.
+    [self reportProgress:0.94 status:@"Selecting Launchpad icon…"];
+    NSUserDefaults *launchOS = [[NSUserDefaults alloc] initWithSuiteName:kBundleID];
+    [launchOS setInteger:kLaunchOSGridIcon forKey:@"AppIcon"];
+    [launchOS synchronize];
 
-    // --- 4. put it in the Dock, replacing the "Apps" button ----------------
+    // --- 4. pin to the Dock, replacing the "Apps" button -------------------
     [self reportProgress:0.98 status:@"Updating the Dock…"];
     [self pinToDock];
 
@@ -199,9 +185,8 @@ didCompleteWithError:(NSError *)error {
     [self finishWithError:nil];
 }
 
-// Mounts the DMG and returns its /Volumes mount point, or nil on failure.
-// hdiutil's -plist output is parsed rather than its human-readable table, which
-// is empty under -quiet and breaks on volume names with spaces.
+// Mounts the DMG and returns its mount point (nil on failure). Parses hdiutil's
+// -plist output; the plain table breaks on volume names with spaces.
 - (NSString *)mountDMGAtPath:(NSString *)dmgPath error:(NSError **)error {
     NSData *output = nil;
     int status = [self runTool:@"/usr/bin/hdiutil"
@@ -245,14 +230,10 @@ didCompleteWithError:(NSError *)error {
     [[NSFileManager defaultManager] removeItemAtPath:dmgPath error:NULL];
 }
 
-// Removes Tahoe's built-in "Apps"/Launchpad tile plus any prior LaunchOS entries,
-// then inserts LaunchOS as the first persistent app so it sits right next to the
-// Finder icon — exactly where Tahoe's "Apps" button used to be. Edits the Dock
-// plist directly (as the script did) and relaunches the Dock to pick it up.
+// Drops the native Apps/Launchpad tile and inserts LaunchOS at index 0 (next to
+// Finder). Writes the pref only; restarting the Dock is left to the caller.
 - (void)pinToDock {
-    // Read/write through cfprefsd (the preferences API), not the plist file
-    // directly — a direct file write is clobbered by cfprefsd's cache, so the
-    // relaunched Dock would never see it.
+    // Via cfprefsd, not the plist file — a direct write is clobbered by its cache.
     NSUserDefaults *dock = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.dock"];
     if (!dock) {
         return;
@@ -292,8 +273,6 @@ didCompleteWithError:(NSError *)error {
 
     [dock setObject:apps forKey:@"persistent-apps"];
     [dock synchronize];
-
-    [self runTool:@"/usr/bin/killall" arguments:@[ @"Dock" ]];
 }
 
 #pragma mark - Subprocess helpers
@@ -302,8 +281,8 @@ didCompleteWithError:(NSError *)error {
     return [self runTool:path arguments:arguments output:NULL];
 }
 
-// Runs a tool to completion. If `output` is non-NULL, its stdout is captured
-// there. Returns the termination status (or -1 if the tool couldn't launch).
+// Runs a tool to completion, capturing stdout into `output` if non-NULL. Returns
+// the termination status (-1 if it couldn't launch).
 - (int)runTool:(NSString *)path
      arguments:(NSArray<NSString *> *)arguments
         output:(NSData **)output {
@@ -322,7 +301,7 @@ didCompleteWithError:(NSError *)error {
         return -1;
     }
 
-    // Read before waiting so a large output can't deadlock on a full pipe.
+    // Read before waiting so a full pipe can't deadlock.
     NSData *data = pipe ? [pipe.fileHandleForReading readDataToEndOfFile] : nil;
     [task waitUntilExit];
     if (output) {

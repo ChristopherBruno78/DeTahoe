@@ -20,6 +20,8 @@
     [self.window invalidateCursorRectsForView:self];
 }
 
+// Rect of the linked substring (single-line, left-aligned): width of the text
+// before the link is the x offset.
 - (NSRect)linkRect {
     if (self.linkRange.location == NSNotFound ||
         NSMaxRange(self.linkRange) > self.attributedStringValue.length) {
@@ -32,14 +34,13 @@
     NSAttributedString *link =
         [full attributedSubstringFromRange:self.linkRange];
 
-    // NSTextFieldCell insets its text by ~2pt on the leading edge.
-    CGFloat inset = 2.0;
+    CGFloat inset = 2.0;  // NSTextFieldCell's leading inset
     CGFloat x = inset + [prefix size].width;
     CGFloat width = [link size].width;
     return NSMakeRect(x, 0, width, NSHeight(self.bounds));
 }
 
-// Always show the pointing-hand cursor over the link — never the I-beam.
+// Pointing-hand cursor over the link — never the I-beam.
 - (void)resetCursorRects {
     [super resetCursorRects];
     NSRect rect = [self linkRect];

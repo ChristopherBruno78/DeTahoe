@@ -25,6 +25,12 @@ DeTahoe is a single settings window. Tweak the change you want and click **Apply
 | **Hide Superfluous Menu Icons** | Suppresses Tahoe's automatic menu-item icons for a cleaner menu bar. |
 | **Enlarge Window Resize Area** | Widens the window-edge grab zones back to Sequoia-sized targets. |
 
+### Grant App Management Permission
+
+The following features modify other applications, which requires macOS's **App Management** permission. Open **System Settings → Privacy & Security → App Management**, then enable DeTahoe in the list. If DeTahoe is already listed but the change doesn't take effect, toggle it off and back on. You may be prompted to quit and reopen the app after granting access.
+
+<img src="AppManagement.png" alt="App Management Permission" width="600"  >
+
 ### Unbox Application Icons
 
 Tahoe masks every app icon to the system squircle, dropping free-form and legacy icons onto a gray rounded "box." **Unbox** installs each app's own icon as a custom Finder icon so it renders edge-to-edge again — the programmatic equivalent of dragging an icon into Get Info. **Revert** restores the defaults. Apps installed via the Mac App Store are unsupported and skipped.

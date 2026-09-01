@@ -8,16 +8,18 @@
 #import "IconUnboxer.h"
 #import "LaunchOSInstaller.h"
 #import "LinkTextField.h"
+#import <dlfcn.h>
+#import <sys/stat.h>
+#import <sys/time.h>
+#import <errno.h>
 
 
 
-// Preference keys (one per control, in UI order top-to-bottom).
+// Preference keys.
 static NSString * const kPrefCornerRadiusStyle   = @"cornerRadiusStyle";    // "sequoia" | "tahoe"
 static NSString * const kPrefSidebarStyle        = @"sidebarStyle";         // "sequoia" | "tahoe"
 static NSString * const kPrefMenuIcons           = @"menuIcons";            // BOOL
 static NSString * const kPrefWindowResizeEnlarge = @"windowResizeEnlarge";  // BOOL
-// Unbox and Install LaunchOS are one-shot actions triggered by Run buttons —
-// they have no preference.
 
 // Style values.
 static NSString * const kStyleSequoia = @"sequoia";
@@ -31,17 +33,15 @@ static NSString * const kStyleTahoe   = @"tahoe";
 @property (weak) IBOutlet NSPopUpButton *cornerRadiusPopUp;
 @property (weak) IBOutlet NSPopUpButton *sidebarPopUp;
 
-// On/off switches.
 @property (weak) IBOutlet NSSwitch *menuIconsSwitch;
 @property (weak) IBOutlet NSSwitch *windowResizeSwitch;
 
-// The label, help button, and Run button for the Install LaunchOS row, so the
-// whole row can be hidden once LaunchOS is already installed.
+// Install LaunchOS row — hidden once LaunchOS is installed.
 @property (weak) IBOutlet NSTextField *installLaunchOSLabel;
 @property (weak) IBOutlet NSButton *installLaunchOSHelpButton;
 @property (weak) IBOutlet NSButton *installLaunchOSRunButton;
 
-// Retained for the duration of an install so we can drive the progress alert.
+// Retained during an install to drive the progress alert.
 @property (strong) LaunchOSInstaller *launchOSInstaller;
 @property (strong) NSAlert *installProgressAlert;
 @property (strong) NSProgressIndicator *installProgressBar;
@@ -51,36 +51,142 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
 @implementation AppDelegate
 
-+ (void)initialize {
-    if (self != [AppDelegate class]) {
-        return;
-    }
-    // Defaults mirror the controls' initial state in the xib. Unbox and Install
-    // LaunchOS are intentionally left unset (NULL): a NULL field reads as "on"
-    // in the control, yet still counts as a change on the first Apply so the
-    // action runs then — never at launch.
-    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        kPrefCornerRadiusStyle:   kStyleSequoia,
-        kPrefSidebarStyle:        kStyleSequoia,
-        kPrefMenuIcons:           @YES,
-        kPrefWindowResizeEnlarge: @YES,
-    }];
-}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    [self unboxOwnIcon];  // avoid showing as a gray Tahoe squircle
     [self loadPreferencesIntoControls];
-
-    // Turn "LaunchOS" in the row label into a link to the LaunchOS website.
     [self linkifyLaunchOSLabel];
-
-    // Hide the Install LaunchOS row if it's already installed. Unbox and install
-    // run only on Apply, never at launch.
     [self updateLaunchOSRowVisibility];
+    [self warnIfMissingAppManagementPermission];
 }
 
-// Renders the "Install LaunchOS" label with "LaunchOS" as a clickable link to
-// the LaunchOS website. LinkTextField handles the click and cursor itself, so
-// the label stays non-selectable (no text-editing I-beam).
+
+// Whether we hold App Management permission. Asks TCC directly (works even on a
+// fresh machine with no third-party apps); falls back to a filesystem probe if
+// the private symbol is unavailable.
+- (BOOL)hasAppManagementPermission {
+    static int (*preflight)(CFStringRef, CFDictionaryRef) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *tcc = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_LAZY);
+        if (tcc) {
+            preflight = dlsym(tcc, "TCCAccessPreflight");
+        }
+    });
+    if (preflight) {
+        // 0 == authorized; 1 == denied; 2 == undetermined. Prompt unless authorized.
+        return preflight(CFSTR("kTCCServiceSystemPolicyAppBundles"), NULL) == 0;
+    }
+
+    // Fallback: no-op mtime rewrite on a user-owned app in /Applications — EPERM
+    // there means the TCC gate is blocking us. Assumes granted if none is found.
+    NSString *apps = @"/Applications";
+    NSString *ownPath = [NSBundle mainBundle].bundlePath;
+    NSArray<NSString *> *entries =
+        [[NSFileManager defaultManager] contentsOfDirectoryAtPath:apps error:NULL];
+
+    for (NSString *entry in entries) {
+        if (![entry hasSuffix:@".app"]) {
+            continue;
+        }
+        NSString *path = [apps stringByAppendingPathComponent:entry];
+        if ([path isEqualToString:ownPath]) {
+            continue;
+        }
+        NSString *infoPlist = [path stringByAppendingPathComponent:@"Contents/Info.plist"];
+        const char *fsPath = infoPlist.fileSystemRepresentation;
+
+        struct stat st;
+        if (stat(fsPath, &st) != 0) {
+            continue;
+        }
+        // User-owned only, so a failure means TCC, not POSIX.
+        if (st.st_uid != getuid()) {
+            continue;
+        }
+
+        struct timeval times[2];
+        times[0].tv_sec = st.st_atimespec.tv_sec; times[0].tv_usec = 0;
+        times[1].tv_sec = st.st_mtimespec.tv_sec; times[1].tv_usec = 0;  // unchanged
+        if (utimes(fsPath, times) == 0) {
+            return YES;
+        }
+        if (errno == EPERM || errno == EACCES) {
+            return NO;
+        }
+        // Other errors inconclusive — try the next.
+    }
+    return YES;
+}
+
+// If App Management is missing, ask TCC to prompt for it. The native request also
+// registers DeTahoe in the App Management list (it isn't there until requested),
+// so if the user declines we can then send them to a pane that actually shows us.
+- (void)warnIfMissingAppManagementPermission {
+    if ([self hasAppManagementPermission]) {
+        return;
+    }
+
+    // TCCAccessRequest isn't public — resolve it at runtime.
+    static void (*request)(CFStringRef, CFDictionaryRef, void (^)(BOOL)) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *tcc = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_LAZY);
+        if (tcc) {
+            request = dlsym(tcc, "TCCAccessRequest");
+        }
+    });
+
+    if (request) {
+        __weak typeof(self) weakSelf = self;
+        request(CFSTR("kTCCServiceSystemPolicyAppBundles"), NULL, ^(BOOL granted) {
+            if (granted) {
+                return;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf showAppManagementInstructionsAlert];
+            });
+        });
+        return;
+    }
+
+    // Fallback if the symbol is unavailable: just show the instructions.
+    [self showAppManagementInstructionsAlert];
+}
+
+// Explains how to grant App Management, with a button to the Settings pane.
+- (void)showAppManagementInstructionsAlert {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"App Management Permission Needed";
+    alert.informativeText =
+        @"DeTahoe needs App Management permission to modify other apps — unboxing "
+         "their icons and installing Launchpad. Without it, those changes silently "
+         "fail.\n\n"
+         "To grant it:\n"
+         "1. Open System Settings ▸ Privacy & Security ▸ App Management.\n"
+         "2. Turn on DeTahoe.\n"
+         "3. Relaunch DeTahoe.";
+    [alert addButtonWithTitle:@"Open Settings"];
+    [alert addButtonWithTitle:@"Later"];
+
+    void (^handle)(NSModalResponse) = ^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) {
+            NSURL *url = [NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"];
+            [[NSWorkspace sharedWorkspace] openURL:url];
+        }
+    };
+
+    if (self.window) {
+        [alert beginSheetModalForWindow:self.window completionHandler:handle];
+    } else {
+        handle([alert runModal]);
+    }
+}
+
+// Makes "LaunchOS" in the row label a clickable link (LinkTextField owns click
+// + cursor, so the label stays non-selectable).
 - (void)linkifyLaunchOSLabel {
     LinkTextField *label = (LinkTextField *)self.installLaunchOSLabel;
     if (![label isKindOfClass:[LinkTextField class]]) {
@@ -98,7 +204,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
             NSFontAttributeName: label.font ?: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
             NSForegroundColorAttributeName: [NSColor labelColor],
         }];
-    // Style the link like a link: accent color + underline.
+    // Link styling: accent color + underline.
     [attributed addAttributes:@{
         NSForegroundColorAttributeName: [NSColor linkColor],
         NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
@@ -107,6 +213,68 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
     label.linkURL = url;
     label.linkRange = linkRange;
+}
+
+// Installs our .icns as a custom Finder icon on our own bundle each launch,
+// beating Tahoe's gray squircle. Loads from the .icns (not applicationIconImage,
+// which yields an empty custom icon) at the real, de-translocated path.
+- (void)unboxOwnIcon {
+    NSBundle *bundle = [NSBundle mainBundle];
+    NSString *bundlePath = [self realBundlePath];
+
+    NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"] ?: @"AppIcon";
+    NSString *icnsPath = [bundle pathForResource:iconName.stringByDeletingPathExtension
+                                          ofType:@"icns"];
+    NSImage *icon = icnsPath ? [[NSImage alloc] initWithContentsOfFile:icnsPath]
+                             : [NSApp applicationIconImage];
+    if (!bundlePath || !icon) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        // De-quarantine so future launches run in place (no translocation).
+        NSTask *unquarantine = [[NSTask alloc] init];
+        unquarantine.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xattr"];
+        unquarantine.arguments = @[ @"-dr", @"com.apple.quarantine", bundlePath ];
+        [unquarantine launchAndReturnError:NULL];
+        [unquarantine waitUntilExit];
+
+        BOOL ok = [[NSWorkspace sharedWorkspace] setIcon:icon forFile:bundlePath options:0];
+        if (!ok) {
+            NSLog(@"Detahoe: failed to unbox own icon at %@", bundlePath);
+            return;
+        }
+        // Refresh just this item — no full Finder relaunch.
+        [[NSWorkspace sharedWorkspace] noteFileSystemChanged:bundlePath];
+    });
+}
+
+// Our real path, resolving App Translocation to reach the on-disk bundle.
+- (NSString *)realBundlePath {
+    NSURL *bundleURL = [NSBundle mainBundle].bundleURL;
+
+    // SecTranslocate* aren't public — resolve at runtime.
+    static Boolean (*isTranslocated)(CFURLRef, bool *, CFErrorRef *) = NULL;
+    static CFURLRef (*originalPath)(CFURLRef, CFErrorRef *) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY);
+        if (security) {
+            isTranslocated = dlsym(security, "SecTranslocateIsTranslocatedURL");
+            originalPath   = dlsym(security, "SecTranslocateCreateOriginalPathForURL");
+        }
+    });
+
+    if (isTranslocated && originalPath) {
+        bool translocated = false;
+        if (isTranslocated((__bridge CFURLRef)bundleURL, &translocated, NULL) && translocated) {
+            CFURLRef original = originalPath((__bridge CFURLRef)bundleURL, NULL);
+            if (original) {
+                return [(__bridge_transfer NSURL *)original path];
+            }
+        }
+    }
+    return bundleURL.path;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -132,14 +300,23 @@ static NSString * const kStyleTahoe   = @"tahoe";
     [popUp selectItemAtIndex:[style isEqualToString:kStyleTahoe] ? 1 : 0];
 }
 
+// Loads only the preferences that already exist, leaving any unset control at
+// its xib initial state so the first Apply still registers it as a change.
 - (void)loadPreferencesIntoControls {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
 
-    [self selectStyle:[defaults stringForKey:kPrefCornerRadiusStyle] inPopUp:self.cornerRadiusPopUp];
-    [self selectStyle:[defaults stringForKey:kPrefSidebarStyle] inPopUp:self.sidebarPopUp];
-
-    self.menuIconsSwitch.state    = [defaults boolForKey:kPrefMenuIcons]           ? NSControlStateValueOn : NSControlStateValueOff;
-    self.windowResizeSwitch.state = [defaults boolForKey:kPrefWindowResizeEnlarge] ? NSControlStateValueOn : NSControlStateValueOff;
+    if ([defaults objectForKey:kPrefCornerRadiusStyle]) {
+        [self selectStyle:[defaults stringForKey:kPrefCornerRadiusStyle] inPopUp:self.cornerRadiusPopUp];
+    }
+    if ([defaults objectForKey:kPrefSidebarStyle]) {
+        [self selectStyle:[defaults stringForKey:kPrefSidebarStyle] inPopUp:self.sidebarPopUp];
+    }
+    if ([defaults objectForKey:kPrefMenuIcons]) {
+        self.menuIconsSwitch.state = [defaults boolForKey:kPrefMenuIcons] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if ([defaults objectForKey:kPrefWindowResizeEnlarge]) {
+        self.windowResizeSwitch.state = [defaults boolForKey:kPrefWindowResizeEnlarge] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
 }
 
 #pragma mark - Apply
@@ -179,8 +356,25 @@ static NSString * const kStyleTahoe   = @"tahoe";
     [self reportChanges:changes];
 }
 
-// Records and saves a style change if the value differs from what's stored.
-// Returns YES if the value changed.
+// Graceful quit; macOS relaunches Finder so it re-reads the appearance defaults.
+- (void)relaunchFinder {
+    NSArray<NSRunningApplication *> *finders =
+        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.finder"];
+    for (NSRunningApplication *finder in finders) {
+        [finder terminate];
+    }
+}
+
+// Restarts the Dock to re-read its prefs. It ignores -terminate, so kill it;
+// macOS relaunches it.
+- (void)relaunchDock {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/killall"];
+    task.arguments = @[ @"Dock" ];
+    [task launchAndReturnError:NULL];
+}
+
+// Saves a style change if it differs from what's stored; returns YES if changed.
 - (BOOL)noteStyleChange:(NSMutableArray<NSString *> *)changes
                   label:(NSString *)label
                     key:(NSString *)key
@@ -190,7 +384,8 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if ([oldValue isEqualToString:newValue]) {
         return NO;
     }
-    [changes addObject:[NSString stringWithFormat:@"%@: %@ → %@", label, oldValue, newValue]];
+    [changes addObject:[NSString stringWithFormat:@"%@: %@ → %@",
+                        label, oldValue ?: @"Not set", newValue]];
     [defaults setObject:newValue forKey:key];
     return YES;
 }
@@ -202,7 +397,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if ([style isEqualToString:kStyleSequoia]) {
         task.arguments = @[ @"write", @"-g", @"NSConvolutionOverride1", @"-float", @"10" ];
     } else {
-        // Tahoe: remove the override to restore the system default radius.
+        // Tahoe: remove override → system default.
         task.arguments = @[ @"delete", @"-g", @"NSConvolutionOverride1" ];
     }
     NSError *error = nil;
@@ -218,7 +413,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if ([style isEqualToString:kStyleSequoia]) {
         task.arguments = @[ @"write", @"-g", @"NSSplitViewItemSidebarDefaultsToFloatingAppearance", @"-bool", @"false" ];
     } else {
-        // Tahoe: remove the override to restore the floating default.
+        // Tahoe: remove override → floating default.
         task.arguments = @[ @"delete", @"-g", @"NSSplitViewItemSidebarDefaultsToFloatingAppearance" ];
     }
     NSError *error = nil;
@@ -233,7 +428,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
                      key:(NSString *)key
                 newValue:(BOOL)newValue
                 defaults:(NSUserDefaults *)defaults {
-    // A NULL (unset) value always counts as a change, even if it reads as "on".
+    // Unset always counts as a change, even though it reads as "on".
     id stored = [defaults objectForKey:key];
     BOOL oldValue = [stored boolValue];
     if (stored != nil && oldValue == newValue) {
@@ -246,7 +441,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
     return YES;
 }
 
-// Runs `defaults` with the given arguments against the global domain.
+// Runs `defaults` with the given arguments.
 - (void)runDefaultsWithArguments:(NSArray<NSString *> *)arguments {
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/defaults"];
@@ -258,9 +453,8 @@ static NSString * const kStyleTahoe   = @"tahoe";
     }
 }
 
-// Mirrors hide-menu-icons.sh: suppresses Tahoe's automatic menu item icons via
-// the global NSMenuEnableActionImages default. On = hide (false); Off = restore
-// the default. AppKit reads this at app launch, so it takes effect on relaunch.
+// Hides Tahoe's automatic menu-item icons via NSMenuEnableActionImages. Takes
+// effect on app relaunch.
 - (void)applyHideMenuIcons:(BOOL)hide {
     if (hide) {
         [self runDefaultsWithArguments:@[ @"write", @"-g", @"NSMenuEnableActionImages", @"-bool", @"false" ]];
@@ -269,10 +463,8 @@ static NSString * const kStyleTahoe   = @"tahoe";
     }
 }
 
-// Mirrors enlarge-resize-area.sh: widens the window-resize grab areas via a
-// family of global AppleEdgeResize* defaults. On = Sequoia-like profile
-// (corners 30 pt, edges 10 pt); Off = restore Tahoe defaults. Takes effect on
-// app relaunch.
+// Widens window-resize grab areas via AppleEdgeResize* defaults (corners 30 pt,
+// edges 10 pt). Takes effect on app relaunch.
 - (void)applyEnlargeResizeArea:(BOOL)enlarge {
     NSArray<NSString *> *cornerKeys = @[
         @"AppleEdgeResizeCornerSize",
@@ -284,7 +476,6 @@ static NSString * const kStyleTahoe   = @"tahoe";
     ];
 
     if (enlarge) {
-        // Corner 30, edges 30/3 = 10 (matching the script's default profile).
         for (NSString *key in cornerKeys) {
             [self runDefaultsWithArguments:@[ @"write", @"-g", key, @"-float", @"30" ]];
         }
@@ -300,24 +491,26 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
 #pragma mark - Unbox
 
-// Run button: unboxes app icons in /Applications via the compiled IconUnboxer.
-// NSWorkspace.setIcon must run in the user's GUI session, which it does here
-// since this executes inside the app process — so user-writable apps are done
-// in-process. Root-owned apps (e.g. Mac App Store) can't be written directly and
-// setIcon fails when run as root, so instead we briefly grant the user write via
-// an ACL (the only privileged step), retry setIcon in-process, then revoke it.
-// No Dock/Finder relaunch: icons refresh when each app is next relaunched.
 - (IBAction)runUnbox:(id)sender {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         UnboxSummary *summary = [IconUnboxer unboxInDirectories:@[ @"/Applications" ]];
+        [self refreshFinderForApps:summary.unboxed inDirectory:@"/Applications"];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self reportUnboxSummary:summary];
         });
     });
 }
 
-// Shows which apps were unboxed and which were skipped (Mac App Store apps can't
-// be modified by third-party tools).
+// Nudges Finder to redraw each changed app's icon right away, so the user doesn't
+// have to relaunch every app to see it. `names` are app names without ".app".
+- (void)refreshFinderForApps:(NSArray<NSString *> *)names inDirectory:(NSString *)dir {
+    for (NSString *name in names) {
+        NSString *path = [[dir stringByAppendingPathComponent:name]
+                          stringByAppendingPathExtension:@"app"];
+        [[NSWorkspace sharedWorkspace] noteFileSystemChanged:path];
+    }
+}
+
 - (void)reportUnboxSummary:(UnboxSummary *)summary {
     [self reportSummary:summary
                  title:@"Unbox Complete"
@@ -325,12 +518,11 @@ static NSString * const kStyleTahoe   = @"tahoe";
             emptyText:@"No apps needed unboxing."];
 }
 
-// Undo button: removes the custom Finder icons the unboxer installed, restoring
-// each app's default (boxed) icon. Runs off the main thread since it scans every
-// bundle. Icons refresh when each app is next relaunched.
+
 - (IBAction)runUndo:(id)sender {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         UnboxSummary *summary = [IconUnboxer undoInDirectories:@[ @"/Applications" ]];
+        [self refreshFinderForApps:summary.unboxed inDirectory:@"/Applications"];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self reportSummary:summary
                          title:@"Reversion Complete"
@@ -359,6 +551,11 @@ static NSString * const kStyleTahoe   = @"tahoe";
             [summary.appStoreSkipped componentsJoinedByString:@"\n• "]]];
     }
 
+    // Finder refreshes now; a running app's own Dock icon updates on relaunch.
+    if (summary.unboxed.count > 0) {
+        [sections addObject:@"Any app that's currently running updates its icon when you relaunch it."];
+    }
+
     NSString *details = sections.count > 0
         ? [sections componentsJoinedByString:@"\n\n"]
         : emptyText;
@@ -367,8 +564,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
     alert.messageText = title;
     [alert addButtonWithTitle:@"OK"];
 
-    // Put the details in a wide accessory view so the alert is roomier than the
-    // default narrow width.
+    // Wide accessory view for roomier text.
     const CGFloat width = 320.0;
     NSTextField *body = [NSTextField wrappingLabelWithString:details];
     body.selectable = YES;
@@ -382,25 +578,19 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
 #pragma mark - Install LaunchOS
 
-// LaunchOS installs as /Applications/Launchpad.app. We can't uninstall it, so
-// once it's present the option is hidden entirely.
+// Install-only; the option is hidden once LaunchOS is present.
 - (BOOL)isLaunchOSInstalled {
     return [LaunchOSInstaller isInstalled];
 }
 
-// Shows the Install LaunchOS row (label, help button, Run button) only when
-// LaunchOS isn't installed yet.
+ 
 - (void)updateLaunchOSRowVisibility {
     BOOL installed = [self isLaunchOSInstalled];
     self.installLaunchOSLabel.hidden      = installed;
     self.installLaunchOSHelpButton.hidden = installed;
     self.installLaunchOSRunButton.hidden  = installed;
 }
-
-// Run button: downloads LaunchOS, installs it to /Applications, applies the
-// classic Launchpad icon, and pins it to the Dock via LaunchOSInstaller. A
-// progress sheet with a progress bar tracks the download and install; the whole
-// operation runs as the user (it edits the user's Dock preferences).
+ 
 - (IBAction)runInstallLaunchOS:(id)sender {
     if ([self isLaunchOSInstalled]) {
         return;  // Install only; never uninstall.
@@ -417,14 +607,14 @@ static NSString * const kStyleTahoe   = @"tahoe";
         [weakSelf dismissInstallProgressAlertWithSuccess:success error:error];
     }];
 }
-
-// Builds and shows the progress sheet: a determinate progress bar plus a status
-// line in the alert's accessory view. Only "Cancel"/"OK" buttons are omitted so
-// the sheet stays modal while work is underway.
+ 
 - (void)presentInstallProgressAlert {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Installing LaunchOS";
     alert.informativeText = @"Downloading and installing LaunchOS. This may take a moment.";
+
+    // No dismiss button — the sheet closes itself when done.
+    alert.buttons.firstObject.hidden = YES;
 
     const CGFloat width = 320.0;
 
@@ -453,7 +643,7 @@ static NSString * const kStyleTahoe   = @"tahoe";
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
-// Tears down the progress sheet and reports the result with a follow-up alert.
+// Closes the progress sheet and reports the result.
 - (void)dismissInstallProgressAlertWithSuccess:(BOOL)success error:(NSError *)error {
     if (self.installProgressAlert) {
         [self.window endSheet:self.installProgressAlert.window];
@@ -469,29 +659,45 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if (success) {
         result.messageText = @"LaunchOS Installed";
         result.informativeText =
-            @"LaunchOS is installed and pinned to the Dock, right next to Finder. "
-             "If Tahoe's native “Apps” button is still showing, you can drag it out of the Dock.";
-    } else {
-        result.alertStyle = NSAlertStyleWarning;
-        result.messageText = @"Installation Failed";
-        result.informativeText = error.localizedDescription
-            ?: @"LaunchOS could not be installed.";
+            @"The Dock needs to restart for the new Launchpad tile to appear.";
+        // Offer a Dock restart rather than forcing it.
+        [result addButtonWithTitle:@"Restart Dock"];
+        [result addButtonWithTitle:@"OK"];
+        [result beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+            if (response == NSAlertFirstButtonReturn) {
+                [self relaunchDock];
+            }
+        }];
+        return;
     }
+
+    result.alertStyle = NSAlertStyleWarning;
+    result.messageText = @"Installation Failed";
+    result.informativeText = error.localizedDescription
+        ?: @"LaunchOS could not be installed.";
     [result addButtonWithTitle:@"OK"];
     [result beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
 - (void)reportChanges:(NSArray<NSString *> *)changes {
-    NSAlert *alert = [[NSAlert alloc] init];
+    // Nothing changed → stay silent.
     if (changes.count == 0) {
-        alert.messageText = @"No Changes";
-        alert.informativeText = @"Your settings already match what's applied.";
-    } else {
-        alert.messageText = @"Applied Changes";
-        alert.informativeText = [changes componentsJoinedByString:@"\n"];
+        return;
     }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Applied Changes";
+    alert.informativeText = [NSString stringWithFormat:
+        @"%@\n\nApps pick up these changes when they're relaunched.",
+        [changes componentsJoinedByString:@"\n"]];
+    // Offer a Finder restart rather than forcing it.
+    [alert addButtonWithTitle:@"Restart Finder"];
     [alert addButtonWithTitle:@"OK"];
-    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) {
+            [self relaunchFinder];
+        }
+    }];
 }
 
 @end
