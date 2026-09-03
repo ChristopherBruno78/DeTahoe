@@ -121,7 +121,17 @@ static NSString * const kStyleTahoe   = @"tahoe";
 // registers DeTahoe in the App Management list (it isn't there until requested),
 // so if the user declines we can then send them to a pane that actually shows us.
 - (void)warnIfMissingAppManagementPermission {
+    [self ensureAppManagementPermissionThen:nil];
+}
+
+// Gate for anything that modifies other apps. Runs `action` on the main queue
+// once we hold App Management; otherwise prompts, and on refusal explains how to
+// grant it — leaving `action` unrun.
+- (void)ensureAppManagementPermissionThen:(void (^)(void))action {
     if ([self hasAppManagementPermission]) {
+        if (action) {
+            action();
+        }
         return;
     }
 
@@ -138,10 +148,13 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if (request) {
         __weak typeof(self) weakSelf = self;
         request(CFSTR("kTCCServiceSystemPolicyAppBundles"), NULL, ^(BOOL granted) {
-            if (granted) {
-                return;
-            }
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (granted) {
+                    if (action) {
+                        action();
+                    }
+                    return;
+                }
                 [weakSelf showAppManagementInstructionsAlert];
             });
         });
@@ -497,6 +510,13 @@ static NSString * const kStyleTahoe   = @"tahoe";
 #pragma mark - Unbox
 
 - (IBAction)runUnbox:(id)sender {
+    __weak typeof(self) weakSelf = self;
+    [self ensureAppManagementPermissionThen:^{
+        [weakSelf startUnbox];
+    }];
+}
+
+- (void)startUnbox {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         UnboxSummary *summary = [IconUnboxer unboxInDirectories:@[ @"/Applications" ]];
         [self refreshFinderForApps:summary.unboxed inDirectory:@"/Applications"];
@@ -525,6 +545,13 @@ static NSString * const kStyleTahoe   = @"tahoe";
 
 
 - (IBAction)runUndo:(id)sender {
+    __weak typeof(self) weakSelf = self;
+    [self ensureAppManagementPermissionThen:^{
+        [weakSelf startUndo];
+    }];
+}
+
+- (void)startUndo {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         UnboxSummary *summary = [IconUnboxer undoInDirectories:@[ @"/Applications" ]];
         [self refreshFinderForApps:summary.unboxed inDirectory:@"/Applications"];
@@ -600,7 +627,13 @@ static NSString * const kStyleTahoe   = @"tahoe";
     if ([self isLaunchOSInstalled]) {
         return;  // Install only; never uninstall.
     }
+    __weak typeof(self) weakSelf = self;
+    [self ensureAppManagementPermissionThen:^{
+        [weakSelf startInstallLaunchOS];
+    }];
+}
 
+- (void)startInstallLaunchOS {
     [self presentInstallProgressAlert];
 
     __weak typeof(self) weakSelf = self;
