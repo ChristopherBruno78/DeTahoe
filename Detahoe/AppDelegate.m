@@ -14,12 +14,10 @@
 #import <errno.h>
 
 
-
-// Preference keys.
-static NSString * const kPrefCornerRadiusStyle   = @"cornerRadiusStyle";    // "sequoia" | "tahoe"
-static NSString * const kPrefSidebarStyle        = @"sidebarStyle";         // "sequoia" | "tahoe"
-static NSString * const kPrefMenuIcons           = @"menuIcons";            // BOOL
-static NSString * const kPrefWindowResizeEnlarge = @"windowResizeEnlarge";  // BOOL
+static NSString * const kGlobalCornerRadius = @"NSConvolutionOverride1";
+static NSString * const kGlobalSidebar      = @"NSSplitViewItemSidebarDefaultsToFloatingAppearance";
+static NSString * const kGlobalMenuIcons    = @"NSMenuEnableActionImages";
+static NSString * const kGlobalResizeCorner = @"AppleEdgeResizeCornerSize";
 
 // Style values.
 static NSString * const kStyleSequoia = @"sequoia";
@@ -300,29 +298,50 @@ static NSString * const kStyleTahoe   = @"tahoe";
     [popUp selectItemAtIndex:[style isEqualToString:kStyleTahoe] ? 1 : 0];
 }
 
-// Loads only the preferences that already exist, leaving any unset control at
-// its xib initial state so the first Apply still registers it as a change.
-- (void)loadPreferencesIntoControls {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+// Reads a key from the global (`-g`) domain
+- (id)globalValueForKey:(NSString *)key {
+    CFPreferencesAppSynchronize(kCFPreferencesAnyApplication);
+    return CFBridgingRelease(CFPreferencesCopyValue((__bridge CFStringRef)key,
+                                                    kCFPreferencesAnyApplication,
+                                                    kCFPreferencesCurrentUser,
+                                                    kCFPreferencesAnyHost));
+}
 
-    if ([defaults objectForKey:kPrefCornerRadiusStyle]) {
-        [self selectStyle:[defaults stringForKey:kPrefCornerRadiusStyle] inPopUp:self.cornerRadiusPopUp];
-    }
-    if ([defaults objectForKey:kPrefSidebarStyle]) {
-        [self selectStyle:[defaults stringForKey:kPrefSidebarStyle] inPopUp:self.sidebarPopUp];
-    }
-    if ([defaults objectForKey:kPrefMenuIcons]) {
-        self.menuIconsSwitch.state = [defaults boolForKey:kPrefMenuIcons] ? NSControlStateValueOn : NSControlStateValueOff;
-    }
-    if ([defaults objectForKey:kPrefWindowResizeEnlarge]) {
-        self.windowResizeSwitch.state = [defaults boolForKey:kPrefWindowResizeEnlarge] ? NSControlStateValueOn : NSControlStateValueOff;
-    }
+// An override present means Sequoia corners; absent means Tahoe's default.
+- (NSString *)systemCornerRadiusStyle {
+    return [self globalValueForKey:kGlobalCornerRadius] != nil ? kStyleSequoia : kStyleTahoe;
+}
+
+// Floating appearance explicitly off means Sequoia sidebars.
+- (NSString *)systemSidebarStyle {
+    id value = [self globalValueForKey:kGlobalSidebar];
+    return (value != nil && ![value boolValue]) ? kStyleSequoia : kStyleTahoe;
+}
+
+// We hide menu icons by turning action images off, so "off" means hidden.
+- (BOOL)systemMenuIconsHidden {
+    id value = [self globalValueForKey:kGlobalMenuIcons];
+    return value != nil && ![value boolValue];
+}
+
+// Any corner size above the system's stock grab area counts as enlarged.
+- (BOOL)systemResizeAreaEnlarged {
+    id value = [self globalValueForKey:kGlobalResizeCorner];
+    return value != nil && [value doubleValue] > 0.0;
+}
+
+// Loads every control from the live system state, so the UI reflects what the
+// machine is actually set to — including changes made outside DeTahoe.
+- (void)loadPreferencesIntoControls {
+    [self selectStyle:[self systemCornerRadiusStyle] inPopUp:self.cornerRadiusPopUp];
+    [self selectStyle:[self systemSidebarStyle] inPopUp:self.sidebarPopUp];
+    self.menuIconsSwitch.state = [self systemMenuIconsHidden] ? NSControlStateValueOn : NSControlStateValueOff;
+    self.windowResizeSwitch.state = [self systemResizeAreaEnlarged] ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 #pragma mark - Apply
 
 - (IBAction)apply:(id)sender {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSMutableArray<NSString *> *changes = [NSMutableArray array];
 
     BOOL menuIcons    = self.menuIconsSwitch.state    == NSControlStateValueOn;
@@ -331,28 +350,24 @@ static NSString * const kStyleTahoe   = @"tahoe";
     NSString *cornerStyle  = [self styleForPopUp:self.cornerRadiusPopUp];
     NSString *sidebarStyle = [self styleForPopUp:self.sidebarPopUp];
 
-    BOOL cornerChanged = [self noteStyleChange:changes label:@"Window Corners"
-                                           key:kPrefCornerRadiusStyle newValue:cornerStyle defaults:defaults];
-    if (cornerChanged) {
+    // Compare against what the system currently reports
+    if ([self noteStyleChange:changes label:@"Window Corners"
+                     oldValue:[self systemCornerRadiusStyle] newValue:cornerStyle]) {
         [self applyCornerRadiusStyle:cornerStyle];
     }
-    BOOL sidebarChanged = [self noteStyleChange:changes label:@"Sidebars"
-                                            key:kPrefSidebarStyle newValue:sidebarStyle defaults:defaults];
-    if (sidebarChanged) {
+    if ([self noteStyleChange:changes label:@"Sidebars"
+                     oldValue:[self systemSidebarStyle] newValue:sidebarStyle]) {
         [self applySidebarStyle:sidebarStyle];
     }
-    BOOL menuIconsChanged = [self noteToggleChange:changes label:@"Hide Superfluous Menu Icons"
-                                               key:kPrefMenuIcons newValue:menuIcons defaults:defaults];
-    if (menuIconsChanged) {
+    if ([self noteToggleChange:changes label:@"Hide Superfluous Menu Icons"
+                      oldValue:[self systemMenuIconsHidden] newValue:menuIcons]) {
         [self applyHideMenuIcons:menuIcons];
     }
-    BOOL windowResizeChanged = [self noteToggleChange:changes label:@"Enlarge Window Resize Area"
-                                                  key:kPrefWindowResizeEnlarge newValue:windowResize defaults:defaults];
-    if (windowResizeChanged) {
+    if ([self noteToggleChange:changes label:@"Enlarge Window Resize Area"
+                      oldValue:[self systemResizeAreaEnlarged] newValue:windowResize]) {
         [self applyEnlargeResizeArea:windowResize];
     }
 
-    [defaults synchronize];
     [self reportChanges:changes];
 }
 
@@ -374,19 +389,15 @@ static NSString * const kStyleTahoe   = @"tahoe";
     [task launchAndReturnError:NULL];
 }
 
-// Saves a style change if it differs from what's stored; returns YES if changed.
+// Records a style change if it differs from the current system value.
 - (BOOL)noteStyleChange:(NSMutableArray<NSString *> *)changes
                   label:(NSString *)label
-                    key:(NSString *)key
-               newValue:(NSString *)newValue
-               defaults:(NSUserDefaults *)defaults {
-    NSString *oldValue = [defaults stringForKey:key];
+               oldValue:(NSString *)oldValue
+               newValue:(NSString *)newValue {
     if ([oldValue isEqualToString:newValue]) {
         return NO;
     }
-    [changes addObject:[NSString stringWithFormat:@"%@: %@ → %@",
-                        label, oldValue ?: @"Not set", newValue]];
-    [defaults setObject:newValue forKey:key];
+    [changes addObject:[NSString stringWithFormat:@"%@: %@ → %@", label, oldValue, newValue]];
     return YES;
 }
 
@@ -425,19 +436,13 @@ static NSString * const kStyleTahoe   = @"tahoe";
  
 - (BOOL)noteToggleChange:(NSMutableArray<NSString *> *)changes
                    label:(NSString *)label
-                     key:(NSString *)key
-                newValue:(BOOL)newValue
-                defaults:(NSUserDefaults *)defaults {
-    // Unset always counts as a change, even though it reads as "on".
-    id stored = [defaults objectForKey:key];
-    BOOL oldValue = [stored boolValue];
-    if (stored != nil && oldValue == newValue) {
+                oldValue:(BOOL)oldValue
+                newValue:(BOOL)newValue {
+    if (oldValue == newValue) {
         return NO;
     }
-    NSString *oldDesc = stored == nil ? @"Not set" : (oldValue ? @"On" : @"Off");
     [changes addObject:[NSString stringWithFormat:@"%@: %@ → %@",
-                        label, oldDesc, newValue ? @"On" : @"Off"]];
-    [defaults setBool:newValue forKey:key];
+                        label, oldValue ? @"On" : @"Off", newValue ? @"On" : @"Off"]];
     return YES;
 }
 
